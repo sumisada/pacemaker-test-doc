@@ -1,0 +1,510 @@
+
+Pacemaker/Corosync/PCSを使ったフェイルオバーテスト環境の作成方法（CentOS7）
+
+０．概要
+
+　アクティブ・スタンバイ方式のフェイルーオーバーをPacemakerとCorosyncを使い
+　テストする手順を紹介します。
+　
+　2ノードのアクティブ・スタンバイ方式を仮想マシン（VMWare/VirtualBOX/Hyper-V）に
+　実装してシンプルなwebサーバーのフェイルオーバーを実装します。
+　
+１．CentOS7のインストールと仮想化アプリケーション
+
+　VMWareやHyper-Vなどの仮想化アプリケーション上にCentOS7をインストールします。
+　アプリケーション毎にいくつか注意すべき点がそれぞれ少しあります：
+
+　＜VMWare Workstation 11を使う場合＞
+　
+　VMWare Workstation 11は、CentOS7のインストールステップを簡易にするための機構が
+　埋め込まれていますのでそのまま実行するとデスクトップ・ワークステーションでのインストール
+　が実行されます。
+　
+　インストール後にGOMEデスクトップが起動し、runlevel4での動作となりますのでCPUや
+　メモリなどに余裕のあるマシンであれば問題なのですが仮想マシン2台を動作させるには
+　負担が大きな状態となります。
+　
+　- CentOS7 GUI/Consoleログイン切り替え方法 -
+　
+　現在の状況を確認（CentOS7からsystemdに切り替えとなりましたのでsysvinitコマンドは使えません）
+　# systemctl get-default
+　graphical.target
+　
+　graphical.targetでは、GUIログインとなります。
+　
+　# systemctl set-default multi-user.target
+　rm '/etc/systemd/system/default.target'
+　ln -s '/usr/lib/systemd/system/multi-user.target' '/etc/systemd/system/default.target'
+　
+　テキストコンソールログインになります。
+　
+　厳密にランレベルを規定するには、/lib/systemd/system/ディレクトリにrunlevel[0-6].targetの
+　ファイルがありますのでこれらを用いてランレベルを設定しますが、単にＧＵＩかコンソールかの
+　切り替えだけであれば、graphical.targetかmulti-user.targetで切り替えすることができます。
+　
+　＜Micorosoft Hyper-Vを使う場合＞
+　
+　Windows 8.1 Pro以上で利用可能なHyper-V（コントロールパネルのプログラムの追加から追加します）
+　を使う場合には、Hyper-Vマネージャー内の仮想スイッチマネージャーでネットワークを構成した後に
+　仮想マシンの設定→ファームウェアのセキュアブートを有効にするのチェックを外し、ハードディスクの
+　起動順序を最上位に変更します。
+　
+　Hyper-Vの制約は、仮想環境内にDHCPサービスを持っていないためブリッジさせる等の方法が必要となります。
+　
+　Hyper-Vは仮想化機構（VT-x/AMD-V）を占有するため、VMWareやVirtualBox等との共存ができません。
+　
+　
+　＜Oracle VirtualBox＞
+　
+　vbox guest additionsと呼ぶユーティリティーが最新版となっていますので、CentOS7 DVDインストール直後では
+　共有ディスクマウントが失敗します。　yum -y updateでパッケージのアップデートを行う必要があります。
+　
+　＜Aamazon Web Service(AWS)やMicrosoft Azureを使う場合＞
+　
+　クラウド・サービスを用いる場合には、DVDイメージを使うことができませんので各クラウド・サービスで用意
+　されているminimalイメージを用いて仮想マシンをローンチします。
+　
+　
+２．インストール後のパッケージ・インストール（ユーティリティー等）
+
+VMWare Workstationを除くと最小構成（minimal）でのインストール状態でセットアップすることになります。
+そのため、いくつかのパッケージを追加インストールします。
+
+・net-tools、bind-utils
+CentOS7にはifconfig等のコマンドからipコマンドへ変更となりました。また、nslookup等のbind系ユーティリティコマンド
+も含まれていませんので、旧コマンドに慣れている人は下記の2パッケージを追加するとよいでしょう。
+
+yum -y install net-tools
+yum -y install bind-utils
+
+・finger, tcpdump
+CentOS6系からと同様にfingerコマンド、tcpdumpコマンドも含まれていませんので必要に応じて追加します。
+
+yum -y install finger
+yum -y install tcpdump
+
+・wget
+yum -y install wget
+
+テスト用webサーバのチェックで使います
+
+
+・その他（エディタ等）
+最小構成でインストールするとエディタやSHELL等が最小限しかありませんので必要に応じてインストールします。
+ned,emacs,zsh等（bash,viは含まれています）
+
+
+３．テスト環境の構築
+
+SELINUXの無効化とFirewalldの停止
+
+SELinux無効化
+# sed -i 's/SELINUX=enforce/SELINUX=disabled/' /etc/sysconfig/selinux
+# setenforce 0
+
+Firewalld停止、無効
+# systemctl disable firewalld
+# systemctl stop firewalld
+
+フェイルオーバー環境を構築するためのパッケージは、pacemaker, crosync, pcs, httpdの4つだけです。
+
+corosycはpacemakerパッケージをインストールすると依存関係から一緒にインストールされますので、
+個別にインストール指定する必要はありません。
+
+# yum -y install pacemaker pcs httpd
+
+パッケージのインストールは以上で完了です。
+
+ここまでのCentOS7のインストールを2台の仮想マシンで行うか、1台で行った後に仮想イメージをコピーして
+2台分の仮想マシンを準備します。
+
+
+・準備と確認
+
+初期状態でインストールを完了すると、ホスト名：localhost.localdomain、IPは仮想化アプリケーションのDHCPの
+初期設定で起動していますので、ホスト名の設定を行います。
+
+ホスト名を指定するファイル：
+/etc/hostname
+n1
+
+コマンドで一時的に設定する：
+# hostname n1
+
+同時にホストファイルも変更します：
+# cat /etc/hosts
+127.0.0.1 localhost
+10.81.40.10 node1
+10.81.40.20 node2
+
+余談）グローバルカンパニーで、10系でネットワーク構築する場合、
+10.国番号.エリアコード/ブランチ.ＸＸとして構ネットワークを構成している
+ところがあります。
+
+
+コンフィギュレーションを始める前にクラスターノードのＩＰアドレスとホスト名を確認しておきます。
+
+（ホスト１）
+$ uname -n
+node1
+$ ip a | grep "inet"
+ inet 127.0.0.1/8 scope host lo
+ inet 10.81.40.10/24 brd 10.81.40.255 scope global eno16777736
+ 
+（ホスト２）
+$ uname -n
+node2
+$ ip a | grep "inet"
+ inet 127.0.0.1/8 scope host lo
+ inet 10.81.40.20/24 brd 10.81.40.255 scope global eno16777736
+ 
+次に、相互の通信を確認します。
+
+（ホスト１）
+$ ping -c1 node2
+ PING node2 (10.81.40.20) 56(84) byte of data.
+ 64 bytes from node2(10.81.40.20): icmp_seq=1 ttl=64 time=1.31ms
+ --- node2 ping statistics ---
+ 1 packets transmitted, 1 recieved, 0% packet loss, time 0ms
+ rtt min/ave/max/mdev = 1.311/1.311/1.311/0.000 ms
+ 
+（ホスト２）
+$ ping -c1 node1
+　 PING node1 (10.81.40.10) 56(84) byte of data.
+ 64 bytes from node1(10.81.40.10): icmp_seq=1 ttl=64 time=1.31ms
+ --- node1 ping statistics ---
+ 1 packets transmitted, 1 recieved, 0% packet loss, time 0ms
+ rtt min/ave/max/mdev = 1.311/1.311/1.311/0.000 ms
+ 
+ ネットワークの状況に依存してpingのレスポンスタイムは変化します。
+
+（参考）corosync/pcsが利用するポート番号
+
+マルチゾーンでテストする場合には下記のポート番号が通るようにルータ等の設定が
+必要となることがあります。
+
+crosocync: UDP 5404,5405
+pcs: TCP 2224
+IGMP
+MALTICAST
+
+・クラスタユーザのパスワード設定
+
+（ホスト１）
+# passwd hacluster 
+または、sudo passwd hacluster
+Changing password for user hacluster
+New password: 
+Retype new password:
+passwd: all authentication tokens updated successfully.
+
+（ホスト２）
+# passwd hacluster 
+または、sudo passwd hacluster
+Changing password for user hacluster
+New password: 
+Retype new password:
+passwd: all authentication tokens updated successfully.
+
+・pcsdの起動
+
+pcsを使ってコンフィギュレーションしますのでpcsdを起動します。
+
+（ホスト１）
+# systemctl start pcsd
+
+（ホスト２）
+# systemctl start pcsd
+
+pcsコマンドを使うとクラスタの1ノードから構成を行うことができます、
+そのため、クラスタの各ノードの認証を行います。
+
+・認証
+（ホスト１）
+# pcs cluster auth node1 node2
+Username: hacluster
+Password: （先ほど設定したパスワード）
+node1: Authorized
+node2: Authorized
+
+クラスタ名と参加ノード設定
+
+# pcs cluster setup --name cluster_web node1 node2
+...
+node1: Succeeded
+node2: Succeeded
+
+# pcs cluster start --all
+node2: Starting Cluster...
+node1: Starting Cluster...
+
+以上でクラスタ設定が完了です。
+
+クラスタ状態を確認します：
+
+# pcs status cluster
+Cluster Status:
+Last updated: Fri Jan 27 10:10:10 2015
+Last change: Fri Jan 27 11:03:24 2015 via cibadmin on node1
+Stack: corosync
+Current DC: node1 (1) - partition with quorum
+Version: 1.1.10-32.el7_0-368c726
+2 Nodes configured
+1 Resouce configured
+
+
+ノード状態を確認します：
+# pcs status nodes
+Pacemaker Nodes: 
+Online: node1 node2
+Standby:
+Offline:
+
+# corosync-cmapctl | grep members
+runtime.totem.pg.mrp.srp.members.1.config_version (u64) = 0
+runtime.totem.pg.mrp.srp.members.1.ip(str) = r(0) ip(10.81.40.10)
+runtime.totem.pg.mrp.srp.members.1.join_count (u32) = 1
+runtime.totem.pg.mrp.srp.members.1.status (str) = joined
+runtime.totem.pg.mrp.srp.members.1.config_version (u64) = 0
+runtime.totem.pg.mrp.srp.members.1.ip(str) = r(0) ip(10.81.40.20)
+runtime.totem.pg.mrp.srp.members.1.join_count (u32) = 1
+runtime.totem.pg.mrp.srp.members.1.status (str) = joined
+
+# pcs status corosync
+Membership information
+-----------------------
+Nodeid Votes Name
+1 1 node1 (local)
+
+2 1 node2
+
+
+・クラスターコンフィグ
+
+Shoot The Other Node In The Head(STONITH)と呼ぶ不安定状態の検出エラーが出ます。
+2ノードでクラスタを構成した場合にはノード間が断絶した場合（スプリット・ブレイン）に
+双方がマスターとなる可能性を回避できません。そのため、STONITHはoffにします。
+
+# crm_verify -V -L
+ error: unpack_resources: Resource start-up disabled since no STONITH resources have been defined
+ error: unpack_resources: Either configure some or disable STONITH with the stonith-enabled option
+ error: unpack_resources: NOTE: Clusters with shared data need STONITH to ensure data integrity
+ Errors found during check: config not valid
+
+同様にqurum（分散システムにおける最低票）も2ノードクラスタでは停止します。
+
+# pcs peroperty set stonith-enabled=false
+# pcs property
+Cluster Properties:
+ cluster-infrastructure: corosync
+ dc-version: 1.1.10-32.el7_0-368c726
+ no-quorum-policy: ignore
+ stonith-enabled: false
+ 
+・仮想ＩＰアドレス
+
+仮想IPアドレスを10.81.40.199としてリソースを作成します。
+
+# pcs resource create virtual_ip ocf:heartbeat:IPaddr2 ip=10.81.40.199 cidr_netmask=32 op monitor interval=30s
+# pcs status resources
+ virtual_ip (ocf:heartbeat:IPaddr2): Started
+ 
+ 仮想IPへのping確認
+ 
+$ ping -c1 10.81.40.199
+ PING 10.81.40.199 (10.81.40.199) 56(84) bytes of data.
+ 64 bytes from 10.81.40.199: icmp_seq=1 ttl=64 time=0.066 ms
+--- 10.81.40.199 ping statistics ---
+ 1 packets transmitted, 1 received, 0% packet loss, time 0ms
+ rtt min/avg/max/mdev = 0.066/0.066/0.066/0.000 ms
+
+ステータス確認
+
+# pcs status|grep virtual_ip
+ virtual_ip (ocf::heartbeat:IPaddr2): Started node01
+
+
+・テスト用webサーバーの構成
+
+サーバーステータスアドレスのコンフィグ
+
+$ cat /etc/httpd/conf.d/serverstatus.conf
+ Listen 127.0.0.1:80
+ <Location /server-status>
+ SetHandler server-status
+ Order deny,allow
+ Deny from all
+ Allow from 127.0.0.1
+ </Location>
+
+/etc/httpd/conf/httpd.confのリスンポートをすべてコメントアウト
+（ホスト１）
+# sed -i 's/Listen/#Listen/' /etc/httpd/conf/httpd.conf
+
+（ホスト２）
+# sed -i 's/Listen/#Listen/' /etc/httpd/conf/httpd.conf
+
+サービスの起動・再起動とチェック
+（ホスト１）
+# systemctl restart httpd
+# wget http://127.0.0.1/server-status
+
+（ホスト２）
+# systemctl restart httpd
+# wget http://127.0.0.1/server-status
+
+・HTMLファイル
+フェイルオーバーがわかるようにノード名が違います。
+
+（ホスト１）
+# cat > /var/www/html/index.html <<EOF
+ <html>
+ <h1>node1</h1>
+ </html>
+ EOF
+ 
+ （ホスト２）
+ # cat > /var/www/html/index.html <<EOF
+ <html>
+ <h1>node2</h1>
+ </html>
+ EOF
+ 
+httpdサービスの停止（クラスタコントロール下に置くための準備）
+（ホスト１）
+# systemctl stop httpd
+（ホスト２）
+# systemctl stop httpd
+
+リスンポート追加（仮想アドレス）
+
+（ホスト１）
+# echo "Listen 10.81.40.199:80"|sudo tee --append /etc/httpd/conf/httpd.conf
+（ホスト２）
+# echo "Listen 10.81.40.199:80"|sudo tee --append /etc/httpd/conf/httpd.conf
+
+・webserverのリソース定義
+# pcs resource create webserver ocf:heartbeat:apache configfile=/etc/httpd/conf/httpd.conf statusurl="http://localhost/server-status" op monitor interval=1min
+
+・仮想IPアドレスのコロケーションの制約（仮想IPアドレスのリソースへのアクセスを可能にする）
+# pcs constraint colocation add webserver virtual_ip INFINITY
+
+・サービスと仮想IPアドレスの順不同にする制約（にわとりと卵問題の解決）
+# pcs constraint order virtual_ip then webserver
+Adding virtual_ip webserver (kind: Mandatory) (Options: first-action=start then-action=start)
+
+パフォーマンスバランスの制約（スコア50で設定）
+# pcs constraint location webserver prefers node01=50
+
+※マシンリソースが等価でない場合は、この後にcrm_simulate -sLを使ってスコアを割り当てする
+
+コンストレイントの確認
+
+# pcs constraint
+Location Constraints:
+ Resource: webserver
+ Enabled on: node01 (score:50)
+Ordering Constraints:
+ start virtual_ip then start webserver
+Colocation Constraints:
+ webserver with virtual_ip
+ 
+・クラスタの再起動
+# pcs cluster stop --all && sudo pcs cluster start --all
+
+node2: Stopping Cluster...
+node1: Stopping Cluster...
+node2: Starting Cluster...
+node1: Starting Cluster...
+
+・再起動後のクラスターのステータス
+
+# pcs status
+Cluster name: cluster_web
+Last updated: Fri Jan 27 13:27:28 2014
+Last change: Fri Jan 27 13:25:17 2014 via cibadmin on node1
+Stack: corosync
+Current DC: node2 (2) - partition with quorum
+Version: 1.1.10-32.el7_0-368c726
+2 Nodes configured
+2 Resources configured
+Online: [ node1 node2 ]
+Full list of resources:
+virtual_ip (ocf::heartbeat:IPaddr2): Started node1
+webserver (ocf::heartbeat:apache): Started node1
+PCSD Status:
+node1: Online
+node2: Online
+Daemon Status:
+corosync: active/disabled
+pacemaker: active/disabled
+pcsd: active/disabled
+
+・フェイルオーバー動作チェック
+
+
+webブラウザで10.81.40.199（仮想IPアドレス）を表示させます。
+
+「node1」と表示されます。（されないときは設定を再チェック）
+
+（ホスト１）
+クラスタノードを停止
+# pcs cluster stop node1
+node1: Stopping Cluster...
+
+
+（ホスト２）
+クラスタステータス確認
+
+# pcs status
+
+Cluster name: cluster_web
+...
+Online: [ node2 ]
+OFFLINE: [ node1 ]
+Full list of resources:
+virtual_ip (ocf::heartbeat:IPaddr2): Started node2
+webserver (ocf::heartbeat:apache): Started node2
+
+Webブラウザをリロードすると「node2」と表示
+
+フェイルオーバーを確認できます。
+
+・起動設定
+
+（ホスト１）
+# systemctl enable pcsd
+# systemctl enable corosync
+# systemctl enable pacemaker
+
+（ホスト２）
+# systemctl enable pcsd
+# systemctl enable corosync
+# systemctl enable pacemaker
+
+※corosyncの起動時の不具合対応ワークアラウンド（インターフェースＵＰまで10秒待ち）
+編集ファイル： /usr/lib/systemd/system/corosync.service
+
+[Unit]
+Description=Corosync Cluster Engine
+ConditionKernelCommandLine=!nocluster
+Requires=network-online.target
+After=network-online.target
+ 
+[Service]
+ExecStartPre=/usr/bin/sleep 10
+ExecStart=/usr/share/corosync/corosync start
+ExecStop=/usr/share/corosync/corosync stop
+Type=forking
+ 
+[Install]
+WantedBy=multi-user.target
+
+（ホスト１）
+# systemctl daemon-reload
+（ホスト２）
+# systemctl daemon-reload
+
+
+
+　
