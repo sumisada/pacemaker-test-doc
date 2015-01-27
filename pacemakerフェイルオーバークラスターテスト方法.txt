@@ -7,7 +7,7 @@ Pacemaker/Corosync/PCSを使ったフェイルオバーテスト環境の作成方法（CentOS7）
 　テストする手順を紹介します。
 　
 　2ノードのアクティブ・スタンバイ方式を仮想マシン（VMWare/VirtualBOX/Hyper-V）に
-　実装してシンプルなwebサーバーのフェイルオーバーを実装します。
+　実装してシンプルなwebサーバーのフェイルオーバーをテストします。
 　
 １．CentOS7のインストールと仮想化アプリケーション
 
@@ -188,6 +188,8 @@ pcs: TCP 2224
 IGMP
 MALTICAST
 
+４．クラスタ設定とコンフィギュレーション
+
 ・クラスタユーザのパスワード設定
 
 （ホスト１）
@@ -280,6 +282,11 @@ Nodeid Votes Name
 
 
 ・クラスターコンフィグ
+
+※コマンドはrootプロンプトにて表示しています。（動作テストのため）、稼働システムを操作する際は、
+※sudoを使うことがオペレーション・ミス対策におけるシステム管理の「常識」となっています。
+※そのためroot不可として設定してあるシステムも数多く存在しています、それらをご理解の上操作いた
+※だくようお願いします。
 
 Shoot The Other Node In The Head(STONITH)と呼ぶ不安定状態の検出エラーが出ます。
 2ノードでクラスタを構成した場合にはノード間が断絶した場合（スプリット・ブレイン）に
@@ -389,14 +396,14 @@ httpdサービスの停止（クラスタコントロール下に置くための準備）
 ・仮想IPアドレスのコロケーションの制約（仮想IPアドレスのリソースへのアクセスを可能にする）
 # pcs constraint colocation add webserver virtual_ip INFINITY
 
-・サービスと仮想IPアドレスの順不同にする制約（にわとりと卵問題の解決）
+・サービスと仮想IPアドレスを順不同にする制約（にわとりと卵問題の解決）
 # pcs constraint order virtual_ip then webserver
 Adding virtual_ip webserver (kind: Mandatory) (Options: first-action=start then-action=start)
 
 パフォーマンスバランスの制約（スコア50で設定）
 # pcs constraint location webserver prefers node01=50
 
-※マシンリソースが等価でない場合は、この後にcrm_simulate -sLを使ってスコアを割り当てする
+※マシンリソースが等価でない場合は、この後にcrm_simulate -sLを使って算出してスコアを割り当てすることも可能
 
 コンストレイントの確認
 
@@ -440,7 +447,8 @@ corosync: active/disabled
 pacemaker: active/disabled
 pcsd: active/disabled
 
-・フェイルオーバー動作チェック
+
+５．フェイルオーバー動作チェック
 
 
 webブラウザで10.81.40.199（仮想IPアドレス）を表示させます。
@@ -470,7 +478,7 @@ Webブラウザをリロードすると「node2」と表示
 
 フェイルオーバーを確認できます。
 
-・起動設定
+６．起動設定
 
 （ホスト１）
 # systemctl enable pcsd
@@ -481,6 +489,13 @@ Webブラウザをリロードすると「node2」と表示
 # systemctl enable pcsd
 # systemctl enable corosync
 # systemctl enable pacemaker
+
+
+・Known Problemとワークアラウンド
+
+「corosyncの起動がインタフェースの起動より早くなった場合に落ちる」問題に対処する方法です。
+
+システムの状況によってはタイマーの時間を調整する事となりますので、ワークアラウンドとしてご利用ください。
 
 ※corosyncの起動時の不具合対応ワークアラウンド（インターフェースＵＰまで10秒待ち）
 編集ファイル： /usr/lib/systemd/system/corosync.service
